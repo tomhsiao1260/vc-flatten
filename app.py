@@ -1,4 +1,6 @@
 import numpy as np
+import matplotlib.pyplot as plt
+from scipy.interpolate import griddata
 
 def parse_obj(filename):
     vertices = []
@@ -69,31 +71,53 @@ def save_obj(filename, data):
             indices = ' '.join(['/'.join(map(str, vertex)) for vertex in face])
             f.write(f"f {indices}\n")
 
+x_max, y_max, z_max = 8096, 7888, 14370
 segment_name = '20230702185753_s100_3.obj'
 center_name = 'scroll1_center.obj'
-
-z_max = 14370
+mask_name = '20230702185753_mask.png'
 
 segment_data = parse_obj(segment_name)
-center_data = parse_obj(center_name)
+# center_data = parse_obj(center_name)
 
-interp_x = np.interp(segment_data['vertices'][:, 2], center_data['vertices'][:, 2], center_data['vertices'][:, 0])
-interp_y = np.interp(segment_data['vertices'][:, 2], center_data['vertices'][:, 2], center_data['vertices'][:, 1])
-interp_centers = np.column_stack((interp_x, interp_y, segment_data['vertices'][:, 2]))
+# interp_x = np.interp(segment_data['vertices'][:, 2], center_data['vertices'][:, 2], center_data['vertices'][:, 0])
+# interp_y = np.interp(segment_data['vertices'][:, 2], center_data['vertices'][:, 2], center_data['vertices'][:, 1])
+# interp_centers = np.column_stack((interp_x, interp_y, segment_data['vertices'][:, 2]))
 
-angles = np.arctan2(segment_data['vertices'][:, 1] - interp_centers[:, 1], (segment_data['vertices'][:, 0] - interp_centers[:, 0]) * -1)
+# angles = np.arctan2(segment_data['vertices'][:, 1] - interp_centers[:, 1], (segment_data['vertices'][:, 0] - interp_centers[:, 0]) * -1)
 
-u_value = angles / np.pi
-v_value = segment_data['vertices'][:, 2] / z_max
-v_value -= 0.5
-v_value *= 8
+# u_value = (angles + np.pi / 2) / np.pi
+# v_value = segment_data['vertices'][:, 2] / z_max
+# # u_value -= 0.5
+# # v_value -= 0.5
+# # v_value *= 8
 
-flatten_data = segment_data
-flatten_data['vertices'][:, 0] = u_value
-flatten_data['vertices'][:, 1] = v_value
-flatten_data['vertices'][:, 2] = 0
-flatten_data['normals'][:, :] = [0, 0, 1]
+# flatten_data = segment_data
+# flatten_data['vertices'][:, 0] = u_value
+# flatten_data['vertices'][:, 1] = v_value
+# flatten_data['vertices'][:, 2] = 0
+# flatten_data['normals'][:, :] = [0, 0, 1]
 
-save_obj('flatten.obj', flatten_data)
+# save_obj('flatten.obj', flatten_data)
+
+# w = 17381
+# h = 13513
+
+w = 1738
+h = 1351
+
+p  = segment_data['vertices']
+uv = segment_data['uvs']
+
+x = (uv[:, 0] * w).astype(int)
+y = (uv[:, 1] * h).astype(int)
+y = h - y
+
+xy = np.column_stack((x, y))
+rgb = p / np.array([x_max, y_max, z_max])
+grid_x, grid_y = np.meshgrid(np.arange(0, w), np.arange(0, h))
+position_map = griddata(xy, rgb, (grid_x, grid_y), method='linear', fill_value=0)
+
+position_map = np.clip(position_map, 0, 1)
+plt.imsave('position.png', position_map)
 
 
