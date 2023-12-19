@@ -1,5 +1,5 @@
+import cv2
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 
 def parse_obj(filename):
@@ -33,51 +33,91 @@ def parse_obj(filename):
 
     return data
 
-def save_obj(filename, data):
-    vertices = data.get('vertices', np.array([]))
-    normals  = data.get('normals' , np.array([]))
-    uvs      = data.get('uvs'     , np.array([]))
-    faces    = data.get('faces'   , np.array([]))
-    colors   = data.get('colors'  , np.array([]))
+# Generate position image map to store vertices position info of a 3D model
+def gen_pos_map(w, h, x_max, y_max, z_max):
+    obj_name     = '20230702185753.obj'
+    mask_name    = '20230702185753_mask.png'
+    pos_map_name = '20230702185753.png'
 
-    with open(filename, 'w') as f:
+    # load 3D geometry
+    data = parse_obj(obj_name)
 
-        f.write(f"# Vertices: {len(vertices)}\n")
-        f.write(f"# Faces: {len(faces)}\n")
+    # vertices point normalize & add a channel for opacity (p: rgba 0~1)
+    p    = data['vertices']
+    p   /= np.array([x_max, y_max, z_max])
+    p    = np.concatenate([p, np.ones((p.shape[0], 1))], axis=-1)
 
-        f.write(f"mtllib test.mtl\n")
-        f.write(f"usemtl default\n")
+    # fit uv points into the grid structure (w, h)
+    u = (data['uvs'][:, 0] * w).astype(int)
+    v = (data['uvs'][:, 1] * h).astype(int)
+    v = h - v
+    uv = np.column_stack((u, v))
+    grid_u, grid_v = np.meshgrid(np.arange(0, w), np.arange(0, h))
 
-        for i in range(len(vertices)):
-            vertex = vertices[i]
-            normal = normals[i]
-            color = colors[i] if len(colors) else ''
+    # generate the position map (w, h, rgba)
+    position_map = griddata(uv, p, (grid_u, grid_v), method='nearest', fill_value=0)
+    position_map = np.clip(position_map, 0, 1)
 
-            f.write('v ')
-            f.write(f"{' '.join(str(round(x, 6)) for x in vertex)}")
-            # f.write(f"{' '.join(str(round(x, 2)) for x in vertex)}")
-            f.write(' ')
-            f.write(f"{' '.join(str(round(x, 6)) for x in color)}")
-            f.write('\n')
+    # remove the part outside the mask (opacity 0)
+    mask_img = cv2.imread(mask_name, cv2.IMREAD_UNCHANGED)
+    mask_img = mask_img.astype(np.float32) / 255
+    mask_img = cv2.resize(mask_img, dsize=(w, h), interpolation=cv2.INTER_NEAREST)
+    mask = mask_img < 0.01
+    position_map[mask, -1] = 0
 
-            f.write('vn ')
-            f.write(f"{' '.join(str(round(x, 6)) for x in normal)}")
-            f.write('\n')
+    # save position map with unit16 resolution (also rgba -> bgra for opencv)
+    position_map = (position_map * 65535).astype(np.uint16)
+    position_map = position_map[:, :, [2, 1, 0, 3]]
+    cv2.imwrite(pos_map_name, position_map, [cv2.IMWRITE_PNG_COMPRESSION, 9])
 
-        for uv in uvs:
-            f.write(f"vt {' '.join(str(round(x, 6)) for x in uv)}\n")
+# Generate multiple sub mask (clustering)
+def clustering(x_max, y_max, z_max):
+    center_name  = 'scroll1_center.obj'
+    pos_map_name = '20230702185753.png'
 
-        for face in faces:
-            indices = ' '.join(['/'.join(map(str, vertex)) for vertex in face])
-            f.write(f"f {indices}\n")
+    # load scroll center into (used for cutting)
+    data    = parse_obj(center_name)
+    center  = data['vertices']
+    center /= np.array([x_max, y_max, z_max])
 
+    # load position map (rgba 0~1)
+    position_map = cv2.imread(pos_map_name, cv2.IMREAD_UNCHANGED)
+    position_map = position_map[:, :, [2, 1, 0, 3]]
+    position_map = position_map.astype(np.float32) / 65535
+
+    # cutting along the scroll center (edge: opacity 0)
+    edge_x = np.interp(position_map[:, :, 2], center[:, 2], center[:, 0])
+    # mask = abs(position_map[:, :, 0] - edge_x) < 0.01
+    mask = abs(position_map[:, :, 0] - edge_x) < 0.003
+    position_map[mask, -1] = 0
+
+    # position_map = (position_map * 65535).astype(np.uint16)
+    # position_map = position_map[:, :, [2, 1, 0, 3]]
+    # cv2.imwrite('ok.png', position_map, [cv2.IMWRITE_PNG_COMPRESSION, 9])
+    # aa = (position_map * 255).astype(np.uint8)
+    # aa = aa[:, :, [2, 1, 0, 3]]
+    # cv2.imwrite('ok.png', aa)
+
+    alpha_channel = position_map[:, :, 3]
+    binary_alpha = (alpha_channel > 0.95).astype(np.uint8)
+
+    contours, _ = cv2.findContours(binary_alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    mask_count = 0
+    total_area = position_map.shape[0] * position_map.shape[1]
+
+    for i, contour in enumerate(contours):
+        area = cv2.contourArea(contour)
+        if (area / total_area < 0.0005): continue
+
+        mask_count += 1
+        mask = np.zeros_like(binary_alpha)
+        cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
+        cv2.imwrite(f'mask_{mask_count}.png', mask)
+
+# w, h = 17381, 13513
+w, h = 1738, 1351
 x_max, y_max, z_max = 8096, 7888, 14370
-segment_name = '20230702185753_s100_3.obj'
-center_name = 'scroll1_center.obj'
-mask_name = '20230702185753_mask.png'
-
-segment_data = parse_obj(segment_name)
-# center_data = parse_obj(center_name)
 
 # interp_x = np.interp(segment_data['vertices'][:, 2], center_data['vertices'][:, 2], center_data['vertices'][:, 0])
 # interp_y = np.interp(segment_data['vertices'][:, 2], center_data['vertices'][:, 2], center_data['vertices'][:, 1])
@@ -97,27 +137,12 @@ segment_data = parse_obj(segment_name)
 # flatten_data['vertices'][:, 2] = 0
 # flatten_data['normals'][:, :] = [0, 0, 1]
 
-# save_obj('flatten.obj', flatten_data)
+# position map generate
+# gen_pos_map(w, h, x_max, y_max, z_max)
 
-# w = 17381
-# h = 13513
+# sub mask generate
+clustering(x_max, y_max, z_max)
 
-w = 1738
-h = 1351
 
-p  = segment_data['vertices']
-uv = segment_data['uvs']
-
-x = (uv[:, 0] * w).astype(int)
-y = (uv[:, 1] * h).astype(int)
-y = h - y
-
-xy = np.column_stack((x, y))
-rgb = p / np.array([x_max, y_max, z_max])
-grid_x, grid_y = np.meshgrid(np.arange(0, w), np.arange(0, h))
-position_map = griddata(xy, rgb, (grid_x, grid_y), method='linear', fill_value=0)
-
-position_map = np.clip(position_map, 0, 1)
-plt.imsave('position.png', position_map)
 
 
