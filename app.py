@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from scipy.interpolate import griddata
+from scipy.interpolate import griddata, splprep, splev
 
 def parse_obj(filename):
     vertices = []
@@ -85,35 +85,44 @@ def clustering(x_max, y_max, z_max):
     position_map = position_map[:, :, [2, 1, 0, 3]]
     position_map = position_map.astype(np.float32) / 65535
 
-    # cutting along the scroll center (edge: opacity 0)
+    # cutting along the scroll center (opacity change along the cutting edge)
     edge_x = np.interp(position_map[:, :, 2], center[:, 2], center[:, 0])
-    # mask = abs(position_map[:, :, 0] - edge_x) < 0.01
-    mask = abs(position_map[:, :, 0] - edge_x) < 0.003
-    position_map[mask, -1] = 0
+    mask_left = position_map[:, :, 0] - edge_x > 0
+    mask_right = position_map[:, :, 0] - edge_x <= 0
 
-    # position_map = (position_map * 65535).astype(np.uint16)
-    # position_map = position_map[:, :, [2, 1, 0, 3]]
-    # cv2.imwrite('ok.png', position_map, [cv2.IMWRITE_PNG_COMPRESSION, 9])
-    # aa = (position_map * 255).astype(np.uint8)
-    # aa = aa[:, :, [2, 1, 0, 3]]
-    # cv2.imwrite('ok.png', aa)
+    position_map_left = np.copy(position_map)
+    position_map_right = np.copy(position_map)
+    position_map_left[mask_left, -1] = 0
+    position_map_right[mask_right, -1] = 0
 
-    alpha_channel = position_map[:, :, 3]
-    binary_alpha = (alpha_channel > 0.95).astype(np.uint8)
+    # use opacity value to distinguish between different areas
+    binary_img_left = (position_map_left[:, :, 3] > 0.95).astype(np.uint8)
+    binary_img_right = (position_map_right[:, :, 3] > 0.95).astype(np.uint8)
+    contours_left, _ = cv2.findContours(binary_img_left, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours_right, _ = cv2.findContours(binary_img_right, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    contours, _ = cv2.findContours(binary_alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    mask_count = 0
+    # draw & save each contour mask (left, right)
     total_area = position_map.shape[0] * position_map.shape[1]
 
-    for i, contour in enumerate(contours):
+    mask_count = 0
+    for i, contour in enumerate(contours_left):
         area = cv2.contourArea(contour)
         if (area / total_area < 0.0005): continue
 
         mask_count += 1
-        mask = np.zeros_like(binary_alpha)
+        mask = np.zeros_like(binary_img_left)
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
-        cv2.imwrite(f'mask_{mask_count}.png', mask)
+        cv2.imwrite(f'mask_l{mask_count}.png', mask)
+
+    mask_count = 0
+    for i, contour in enumerate(contours_right):
+        area = cv2.contourArea(contour)
+        if (area / total_area < 0.0005): continue
+
+        mask_count += 1
+        mask = np.zeros_like(binary_img_right)
+        cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
+        cv2.imwrite(f'mask_r{mask_count}.png', mask)
 
 # w, h = 17381, 13513
 w, h = 1738, 1351
