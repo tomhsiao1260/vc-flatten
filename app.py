@@ -2,6 +2,16 @@ import cv2
 import numpy as np
 from scipy.interpolate import griddata, splprep, splev
 
+# input: rgb 0~1
+def imshow(array):
+    image = array.copy()
+    image = (image * 255).astype(np.uint8)
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+    cv2.imshow('image', image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
 def parse_obj(filename):
     vertices = []
     normals = []
@@ -74,6 +84,7 @@ def gen_pos_map(w, h, x_max, y_max, z_max):
 def clustering(x_max, y_max, z_max):
     center_name  = 'scroll1_center.obj'
     pos_map_name = '20230702185753.png'
+    segmentID    = '20230702185753'
 
     # load scroll center into (used for cutting)
     data    = parse_obj(center_name)
@@ -111,8 +122,13 @@ def clustering(x_max, y_max, z_max):
 
         mask_count += 1
         mask = np.zeros_like(binary_img_left)
+
+        mask_name = f'{segmentID}_l{mask_count}_mask.png'
+        uv_name = f'{segmentID}_l{mask_count}_uv.png'
+
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
-        cv2.imwrite(f'mask_l{mask_count}.png', mask)
+        cv2.imwrite(mask_name, mask)
+        gen_sub_uv(mask_name, uv_name)
 
     mask_count = 0
     for i, contour in enumerate(contours_right):
@@ -121,30 +137,48 @@ def clustering(x_max, y_max, z_max):
 
         mask_count += 1
         mask = np.zeros_like(binary_img_right)
+
+        mask_name = f'{segmentID}_r{mask_count}_mask.png'
+        uv_name = f'{segmentID}_r{mask_count}_uv.png'
+
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
-        cv2.imwrite(f'mask_r{mask_count}.png', mask)
+        cv2.imwrite(mask_name, mask)
+        gen_sub_uv(mask_name, uv_name)
+
+# Generate a new coordinate for each sub mask (with UV info)
+def gen_sub_uv(mask_name, uv_name):
+    # load sub mask
+    mask = cv2.imread(mask_name)
+    gray = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+
+    # uv coordinate with mask
+    h, w = mask.shape[:2]
+    alpha = gray / 255
+    u, v = np.meshgrid(np.linspace(0, 1, w), np.linspace(0, 1, h))
+    uv = np.dstack((u, 1-v, np.ones_like(u), alpha))
+
+    # find the contour & box region of that sub mask
+    contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_contour = max(contours, key=cv2.contourArea)
+    rect = cv2.minAreaRect(max_contour)
+    box = cv2.boxPoints(rect)
+    box = np.intp(box)
+    # cv2.drawContours(mask, [box], 0, (0, 0, 255), 2)
+
+    # crop that region with sub mask & uv info
+    w, h = int(rect[1][0]), int(rect[1][1])
+    src_pts = box.astype('float32')
+    dst_pts = np.array([[0, h-1], [0, 0], [w-1, 0], [w-1, h-1]], dtype='float32')
+    matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
+
+    cropped_image = cv2.warpPerspective(uv, matrix, (w, h))
+    cropped_image = (cropped_image * 65535).astype(np.uint16)
+    cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_RGBA2BGRA)
+    cv2.imwrite(uv_name, cropped_image)
 
 # w, h = 17381, 13513
 w, h = 1738, 1351
 x_max, y_max, z_max = 8096, 7888, 14370
-
-# interp_x = np.interp(segment_data['vertices'][:, 2], center_data['vertices'][:, 2], center_data['vertices'][:, 0])
-# interp_y = np.interp(segment_data['vertices'][:, 2], center_data['vertices'][:, 2], center_data['vertices'][:, 1])
-# interp_centers = np.column_stack((interp_x, interp_y, segment_data['vertices'][:, 2]))
-
-# angles = np.arctan2(segment_data['vertices'][:, 1] - interp_centers[:, 1], (segment_data['vertices'][:, 0] - interp_centers[:, 0]) * -1)
-
-# u_value = (angles + np.pi / 2) / np.pi
-# v_value = segment_data['vertices'][:, 2] / z_max
-# # u_value -= 0.5
-# # v_value -= 0.5
-# # v_value *= 8
-
-# flatten_data = segment_data
-# flatten_data['vertices'][:, 0] = u_value
-# flatten_data['vertices'][:, 1] = v_value
-# flatten_data['vertices'][:, 2] = 0
-# flatten_data['normals'][:, :] = [0, 0, 1]
 
 # position map generate
 # gen_pos_map(w, h, x_max, y_max, z_max)
