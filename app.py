@@ -2,16 +2,6 @@ import cv2
 import numpy as np
 from scipy.interpolate import griddata, splprep, splev
 
-# input: rgb 0~1
-def imshow(array):
-    image = array.copy()
-    image = (image * 255).astype(np.uint8)
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-    cv2.imshow('image', image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
 def parse_obj(filename):
     vertices = []
     normals = []
@@ -148,7 +138,7 @@ def clustering(x_max, y_max, z_max):
 # Generate a new coordinate for each sub mask (with UV info)
 def gen_sub_uv(mask_name, uv_name):
     # load sub mask
-    mask = cv2.imread(mask_name)
+    mask = cv2.imread(mask_name, cv2.IMREAD_UNCHANGED)
     gray = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
 
     # uv coordinate with mask
@@ -176,6 +166,50 @@ def gen_sub_uv(mask_name, uv_name):
     cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_RGBA2BGRA)
     cv2.imwrite(uv_name, cropped_image)
 
+def stretch_uv(source):
+    pos = cv2.imread('20230702185753.png', cv2.IMREAD_UNCHANGED)
+    pos = cv2.cvtColor(pos, cv2.COLOR_BGRA2RGBA)
+
+    src  = cv2.imread(source, cv2.IMREAD_UNCHANGED)
+    src  = cv2.cvtColor(src, cv2.COLOR_BGRA2RGBA)
+    gray = (src[:, :, 3] * 255).astype(np.uint8)
+
+    contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_contour = max(contours, key=cv2.contourArea)
+    rect = cv2.minAreaRect(max_contour)
+    box = cv2.boxPoints(rect)
+    box = np.intp(box)
+    # cv2.drawContours(src, [box], 0, (0, 0, 65535), 2)
+
+    m = max_contour[:, 0, :]
+    uvv = src[m[:, 1], m[:, 0]][:, :2] / 65535
+    h, w = pos.shape[:2]
+    x_max, y_max, z_max = 8096, 7888, 14370
+    p  = pos[((1-uvv[:, 1]) * (h-1)).astype(int), (uvv[:, 0] * (w-1)).astype(int)][:, :3].astype(float)
+    p /= 65535
+
+    center_name  = 'scroll1_center.obj'
+    data    = parse_obj(center_name)
+    center  = data['vertices']
+    center /= np.array([x_max, y_max, z_max])
+
+    # cutting along the scroll center (opacity change along the cutting edge)
+    edge_x = np.interp(p[:, 2], center[:, 2], center[:, 0])
+    edge_y = np.interp(p[:, 2], center[:, 2], center[:, 1])
+    mask1 = abs(p[:, 0] - edge_x) < 0.005
+    mask2 = p[:, 1] - edge_y > 0
+    mask3 = p[:, 1] - edge_y < 0
+    m1 = np.bitwise_and(mask1, mask2)
+    m2 = np.bitwise_and(mask1, mask3)
+    avg1 = np.mean(m[m1], axis=0)
+    avg2 = np.mean(m[m2], axis=0)
+
+    # cv2.drawContours(src, [m[mask]], 0, (0, 65535, 0), 2)
+
+    cv2.imshow('image', src)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
 # w, h = 17381, 13513
 w, h = 1738, 1351
 x_max, y_max, z_max = 8096, 7888, 14370
@@ -184,7 +218,9 @@ x_max, y_max, z_max = 8096, 7888, 14370
 # gen_pos_map(w, h, x_max, y_max, z_max)
 
 # sub mask generate
-clustering(x_max, y_max, z_max)
+# clustering(x_max, y_max, z_max)
+
+stretch_uv('20230702185753_r3_uv.png')
 
 
 
