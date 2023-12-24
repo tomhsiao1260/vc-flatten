@@ -188,6 +188,10 @@ def stretch_uv(source):
     p  = pos[((1-uvv[:, 1]) * (h-1)).astype(int), (uvv[:, 0] * (w-1)).astype(int)][:, :3].astype(float)
     p /= 65535
 
+    h, w = src.shape[:2]
+    m = m.astype('float')
+    m /= np.array([w, h])
+
     center_name  = 'scroll1_center.obj'
     data    = parse_obj(center_name)
     center  = data['vertices']
@@ -201,12 +205,32 @@ def stretch_uv(source):
     mask3 = p[:, 1] - edge_y < 0
     m1 = np.bitwise_and(mask1, mask2)
     m2 = np.bitwise_and(mask1, mask3)
-    avg1 = np.mean(m[m1], axis=0)
-    avg2 = np.mean(m[m2], axis=0)
+    p1 = m[m1]
+    p2 = m[m2]
+    avg1 = np.mean(p1, axis=0)
+    avg2 = np.mean(p2, axis=0)
+    p1 = p1[abs(p1[:, 0] - avg1[0]) < abs(p1[:, 0] - avg2[0])]
+    p2 = p2[abs(p2[:, 0] - avg2[0]) < abs(p2[:, 0] - avg1[0])]
+    if(p1[0, 1] > p1[-1, 1]): p1 = np.flip(p1, axis=0)
+    if(p2[0, 1] > p2[-1, 1]): p2 = np.flip(p2, axis=0)
 
-    # cv2.drawContours(src, [m[mask]], 0, (0, 65535, 0), 2)
+    h, w = src.shape[:2]
+    e1_x = np.interp(np.linspace(0, 1, h), p1[:, 1], p1[:, 0])
+    e2_x = np.interp(np.linspace(0, 1, h), p2[:, 1], p2[:, 0])
+    if(avg1[0] > avg2[0]): e1_x = 1 - e1_x
+    if(avg1[0] < avg2[0]): e2_x = 1 - e2_x
 
-    cv2.imshow('image', src)
+    img = np.zeros((h, w, 4), dtype=np.uint16)
+    img[:, :, 0] = (e1_x[:, np.newaxis] * 65535).astype(np.uint16)
+    img[:, :, 1] = (e2_x[:, np.newaxis] * 65535).astype(np.uint16)
+    img[:, :, 3] = 65535
+
+    # cv2.drawContours(src, [p1], 0, (0, 65535, 0), 2)
+    # cv2.drawContours(src, [p2], 0, (0, 65535, 0), 2)
+
+    img = img[:, :, [2, 1, 0, 3]]
+    cv2.imshow('image', img)
+    cv2.imwrite('20230702185753_r3_d.png', img)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
