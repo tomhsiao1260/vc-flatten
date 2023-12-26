@@ -115,10 +115,12 @@ def clustering(x_max, y_max, z_max):
 
         mask_name = f'{segmentID}_l{mask_count}_mask.png'
         uv_name = f'{segmentID}_l{mask_count}_uv.png'
+        d_name = f'{segmentID}_l{mask_count}_d.png'
 
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
         cv2.imwrite(mask_name, mask)
-        gen_sub_uv(mask_name, uv_name)
+        gen_sub_uv(mask_name, uv_name, position_map)
+        # gen_sub_d(uv_name, d_name)
 
     mask_count = 0
     for i, contour in enumerate(contours_right):
@@ -130,35 +132,50 @@ def clustering(x_max, y_max, z_max):
 
         mask_name = f'{segmentID}_r{mask_count}_mask.png'
         uv_name = f'{segmentID}_r{mask_count}_uv.png'
+        d_name = f'{segmentID}_r{mask_count}_d.png'
 
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
         cv2.imwrite(mask_name, mask)
-        gen_sub_uv(mask_name, uv_name)
+        gen_sub_uv(mask_name, uv_name, position_map)
+        # gen_sub_d(uv_name, d_name)
 
 # Generate a new coordinate for each sub mask (with UV info)
-def gen_sub_uv(mask_name, uv_name):
+def gen_sub_uv(mask_name, uv_name, position_map):
     # load sub mask
     mask = cv2.imread(mask_name, cv2.IMREAD_UNCHANGED)
-    gray = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
 
     # uv coordinate with mask
     h, w = mask.shape[:2]
-    alpha = gray / 255
+    alpha = mask / 255
     u, v = np.meshgrid(np.linspace(0, 1, w), np.linspace(0, 1, h))
     uv = np.dstack((u, 1-v, np.ones_like(u), alpha))
 
     # find the contour & box region of that sub mask
-    contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     max_contour = max(contours, key=cv2.contourArea)
     rect = cv2.minAreaRect(max_contour)
     box = cv2.boxPoints(rect)
     box = np.intp(box)
     # cv2.drawContours(mask, [box], 0, (0, 0, 255), 2)
 
+    # box index sorting (make larger scroll z position is always at the top of the image)
+    center, size, angle = rect
+    center = np.array(center)
+    half_box = ((box + center) / 2).astype(int)
+    z_pos = [position_map[y, x, 2] for x, y in half_box]
+    sorted_ind = sorted(range(len(z_pos)), key=lambda k: z_pos[k])
+    sorted_box = box[sorted_ind]
+
+    db = np.cross(sorted_box[1] - sorted_box[0], sorted_box[0] - center)
+    dt = np.cross(sorted_box[3] - sorted_box[2], sorted_box[2] - center)
+    if (db < 0): sorted_ind[1], sorted_ind[0] = sorted_ind[0], sorted_ind[1]
+    if (dt < 0): sorted_ind[3], sorted_ind[2] = sorted_ind[2], sorted_ind[3]
+    sorted_box = box[sorted_ind]
+
     # crop that region with sub mask & uv info
-    w, h = int(rect[1][0]), int(rect[1][1])
-    src_pts = box.astype('float32')
-    dst_pts = np.array([[0, h-1], [0, 0], [w-1, 0], [w-1, h-1]], dtype='float32')
+    w, h = int(size[0]), int(size[1])
+    src_pts = sorted_box.astype('float32')
+    dst_pts = np.array([[0, h-1], [w-1, h-1], [w-1, 0], [0, 0]], dtype='float32')
     matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
 
     cropped_image = cv2.warpPerspective(uv, matrix, (w, h))
@@ -166,11 +183,11 @@ def gen_sub_uv(mask_name, uv_name):
     cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_RGBA2BGRA)
     cv2.imwrite(uv_name, cropped_image)
 
-def stretch_uv(source):
+def gen_sub_d(uv_name, d_name):
     pos = cv2.imread('20230702185753.png', cv2.IMREAD_UNCHANGED)
     pos = cv2.cvtColor(pos, cv2.COLOR_BGRA2RGBA)
 
-    src  = cv2.imread(source, cv2.IMREAD_UNCHANGED)
+    src  = cv2.imread(uv_name, cv2.IMREAD_UNCHANGED)
     src  = cv2.cvtColor(src, cv2.COLOR_BGRA2RGBA)
     gray = (src[:, :, 3] * 255).astype(np.uint8)
 
@@ -207,32 +224,39 @@ def stretch_uv(source):
     m2 = np.bitwise_and(mask1, mask3)
     p1 = m[m1]
     p2 = m[m2]
-    avg1 = np.mean(p1, axis=0)
-    avg2 = np.mean(p2, axis=0)
-    p1 = p1[abs(p1[:, 0] - avg1[0]) < abs(p1[:, 0] - avg2[0])]
-    p2 = p2[abs(p2[:, 0] - avg2[0]) < abs(p2[:, 0] - avg1[0])]
-    if(p1[0, 1] > p1[-1, 1]): p1 = np.flip(p1, axis=0)
-    if(p2[0, 1] > p2[-1, 1]): p2 = np.flip(p2, axis=0)
-
+    print(p1.shape)
+    print(p2.shape)
     h, w = src.shape[:2]
-    e1_x = np.interp(np.linspace(0, 1, h), p1[:, 1], p1[:, 0])
-    e2_x = np.interp(np.linspace(0, 1, h), p2[:, 1], p2[:, 0])
-    if(avg1[0] > avg2[0]): e1_x = 1 - e1_x
-    if(avg1[0] < avg2[0]): e2_x = 1 - e2_x
 
-    img = np.zeros((h, w, 4), dtype=np.uint16)
-    img[:, :, 0] = (e1_x[:, np.newaxis] * 65535).astype(np.uint16)
-    img[:, :, 1] = (e2_x[:, np.newaxis] * 65535).astype(np.uint16)
-    img[:, :, 3] = 65535
+    # 產生 left, right 判斷和去除過短的邊 h / 3
 
-    # cv2.drawContours(src, [p1], 0, (0, 65535, 0), 2)
-    # cv2.drawContours(src, [p2], 0, (0, 65535, 0), 2)
+    # avg1 = np.mean(p1, axis=0)
+    # avg2 = np.mean(p2, axis=0)
 
-    img = img[:, :, [2, 1, 0, 3]]
-    cv2.imshow('image', img)
-    cv2.imwrite('20230702185753_r3_d.png', img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # p1 = p1[abs(p1[:, 0] - avg1[0]) < abs(p1[:, 0] - avg2[0])]
+    # p2 = p2[abs(p2[:, 0] - avg2[0]) < abs(p2[:, 0] - avg1[0])]
+    # if(p1[0, 1] > p1[-1, 1]): p1 = np.flip(p1, axis=0)
+    # if(p2[0, 1] > p2[-1, 1]): p2 = np.flip(p2, axis=0)
+
+    # h, w = src.shape[:2]
+    # e1_x = np.interp(np.linspace(0, 1, h), p1[:, 1], p1[:, 0])
+    # e2_x = np.interp(np.linspace(0, 1, h), p2[:, 1], p2[:, 0])
+    # if(avg1[0] > avg2[0]): e1_x = 1 - e1_x
+    # if(avg1[0] < avg2[0]): e2_x = 1 - e2_x
+
+    # img = np.zeros((h, w, 4), dtype=np.uint16)
+    # img[:, :, 0] = (e1_x[:, np.newaxis] * 65535).astype(np.uint16)
+    # img[:, :, 1] = (e2_x[:, np.newaxis] * 65535).astype(np.uint16)
+    # img[:, :, 3] = 65535
+
+    # # cv2.drawContours(src, [p1], 0, (0, 65535, 0), 2)
+    # # cv2.drawContours(src, [p2], 0, (0, 65535, 0), 2)
+
+    # img = img[:, :, [2, 1, 0, 3]]
+    # cv2.imshow('image', img)
+    # cv2.imwrite(d_name, img)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
 
 # w, h = 17381, 13513
 w, h = 1738, 1351
@@ -242,10 +266,17 @@ x_max, y_max, z_max = 8096, 7888, 14370
 # gen_pos_map(w, h, x_max, y_max, z_max)
 
 # sub mask generate
-# clustering(x_max, y_max, z_max)
+clustering(x_max, y_max, z_max)
 
-stretch_uv('20230702185753_r3_uv.png')
+# gen_sub_d('20230702185753_l1_uv.png', '20230702185753_l1_d.png')
 
+
+
+# filename = '20230702185753_r3_d.png'
+# img = cv2.imread(filename, cv2.IMREAD_UNCHANGED)
+# img = (img / 65535 * 255).astype(np.uint8)
+# img = img[:, :, [0, 2, 1, 3]]
+# cv2.imwrite('ok.png', img)
 
 
 
