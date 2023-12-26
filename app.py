@@ -120,7 +120,8 @@ def clustering(x_max, y_max, z_max):
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
         cv2.imwrite(mask_name, mask)
         gen_sub_uv(mask_name, uv_name, position_map)
-        # gen_sub_d(uv_name, d_name)
+        gen_sub_d(uv_name, d_name, position_map)
+        # if (mask_count == 1): gen_sub_d(uv_name, d_name, position_map)
 
     mask_count = 0
     for i, contour in enumerate(contours_right):
@@ -137,7 +138,7 @@ def clustering(x_max, y_max, z_max):
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
         cv2.imwrite(mask_name, mask)
         gen_sub_uv(mask_name, uv_name, position_map)
-        # gen_sub_d(uv_name, d_name)
+        gen_sub_d(uv_name, d_name, position_map)
 
 # Generate a new coordinate for each sub mask (with UV info)
 def gen_sub_uv(mask_name, uv_name, position_map):
@@ -183,10 +184,7 @@ def gen_sub_uv(mask_name, uv_name, position_map):
     cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_RGBA2BGRA)
     cv2.imwrite(uv_name, cropped_image)
 
-def gen_sub_d(uv_name, d_name):
-    pos = cv2.imread('20230702185753.png', cv2.IMREAD_UNCHANGED)
-    pos = cv2.cvtColor(pos, cv2.COLOR_BGRA2RGBA)
-
+def gen_sub_d(uv_name, d_name, position_map):
     src  = cv2.imread(uv_name, cv2.IMREAD_UNCHANGED)
     src  = cv2.cvtColor(src, cv2.COLOR_BGRA2RGBA)
     gray = (src[:, :, 3] * 255).astype(np.uint8)
@@ -200,61 +198,72 @@ def gen_sub_d(uv_name, d_name):
 
     m = max_contour[:, 0, :]
     uvv = src[m[:, 1], m[:, 0]][:, :2] / 65535
-    h, w = pos.shape[:2]
-    x_max, y_max, z_max = 8096, 7888, 14370
-    p  = pos[((1-uvv[:, 1]) * (h-1)).astype(int), (uvv[:, 0] * (w-1)).astype(int)][:, :3].astype(float)
-    p /= 65535
+    h, w = position_map.shape[:2]
+    p  = position_map[((1-uvv[:, 1]) * (h-1)).astype(int), (uvv[:, 0] * (w-1)).astype(int)][:, :3].astype(float)
+    h, w = src.shape[:2]
+
+    gap = 0.01
+    bins = np.arange(0, 1+gap, gap)
+    weights = np.power(m[:, 1] / h - 0.5, 2) * 4
+    hist, edges = np.histogram(p[:, 2], bins=bins, weights=weights)
+    peak_regions = np.argsort(hist)[-2:]
+
+    if(abs(peak_regions[-1] - peak_regions[-2]) == 1):
+        peak_regions[-2] = np.argsort(hist)[-3]
+
+    corner_list = []
+
+    for region in peak_regions:
+        indices_in_region = np.where((p[:, 2] >= edges[region]) & (p[:, 2] <= edges[region + 1]))[0]
+
+        if indices_in_region.size > 0:
+            inside = False
+            confident = 0
+            threshold = 10
+            avg_value = np.mean(p[indices_in_region, 2])
+
+            for i in range(len(p[:, 2])):
+                current_state = np.abs(p[i, 2] - avg_value) <= 0.03
+
+                if(current_state != inside): confident += 1
+                if(confident == threshold):
+                    inside = not inside
+                    confident = 0
+                    index = i - threshold + 1
+                    if (index < 10): continue
+                    corner_list.append(index)
+
+    x_ind = sorted(corner_list, key=lambda i: m[i, 0])
+
+    tl = min(x_ind[:2], key=lambda i: m[i, 1])
+    bl = max(x_ind[:2], key=lambda i: m[i, 1])
+    tr = min(x_ind[2:], key=lambda i: m[i, 1])
+    br = max(x_ind[2:], key=lambda i: m[i, 1])
 
     h, w = src.shape[:2]
     m = m.astype('float')
     m /= np.array([w, h])
+    mt = np.concatenate((m[tl:0:-1], m[-1:tr:-1]), axis=0)
 
-    center_name  = 'scroll1_center.obj'
-    data    = parse_obj(center_name)
-    center  = data['vertices']
-    center /= np.array([x_max, y_max, z_max])
+    dl = np.interp(np.linspace(0, 1, h), m[tl:bl, 1], m[tl:bl, 0])
+    dr = np.interp(np.linspace(0, 1, h), m[tr:br:-1, 1], m[tr:br:-1, 0])
+    db = np.interp(np.linspace(0, 1, w), m[bl:br, 0], m[bl:br, 1])
+    dt = np.interp(np.linspace(0, 1, w), mt[:, 0], mt[:, 1])
 
-    # cutting along the scroll center (opacity change along the cutting edge)
-    edge_x = np.interp(p[:, 2], center[:, 2], center[:, 0])
-    edge_y = np.interp(p[:, 2], center[:, 2], center[:, 1])
-    mask1 = abs(p[:, 0] - edge_x) < 0.005
-    mask2 = p[:, 1] - edge_y > 0
-    mask3 = p[:, 1] - edge_y < 0
-    m1 = np.bitwise_and(mask1, mask2)
-    m2 = np.bitwise_and(mask1, mask3)
-    p1 = m[m1]
-    p2 = m[m2]
-    print(p1.shape)
-    print(p2.shape)
-    h, w = src.shape[:2]
+    dr = 1 - dr
+    db = 1 - db
 
-    # 產生 left, right 判斷和去除過短的邊 h / 3
+    img = np.zeros((h, w, 4), dtype=np.uint16)
+    img[:, :, 0] = (dl[:, np.newaxis] * 65535).astype(np.uint16)
+    img[:, :, 1] = (dr[:, np.newaxis] * 65535).astype(np.uint16)
+    img[:, :, 2] = (dt[np.newaxis, :] * 65535).astype(np.uint16)
+    img[:, :, 3] = (db[np.newaxis, :] * 65535).astype(np.uint16)
+    img = img[:, :, [2, 1, 0, 3]]
+    cv2.imwrite(d_name, img)
 
-    # avg1 = np.mean(p1, axis=0)
-    # avg2 = np.mean(p2, axis=0)
-
-    # p1 = p1[abs(p1[:, 0] - avg1[0]) < abs(p1[:, 0] - avg2[0])]
-    # p2 = p2[abs(p2[:, 0] - avg2[0]) < abs(p2[:, 0] - avg1[0])]
-    # if(p1[0, 1] > p1[-1, 1]): p1 = np.flip(p1, axis=0)
-    # if(p2[0, 1] > p2[-1, 1]): p2 = np.flip(p2, axis=0)
-
-    # h, w = src.shape[:2]
-    # e1_x = np.interp(np.linspace(0, 1, h), p1[:, 1], p1[:, 0])
-    # e2_x = np.interp(np.linspace(0, 1, h), p2[:, 1], p2[:, 0])
-    # if(avg1[0] > avg2[0]): e1_x = 1 - e1_x
-    # if(avg1[0] < avg2[0]): e2_x = 1 - e2_x
-
-    # img = np.zeros((h, w, 4), dtype=np.uint16)
-    # img[:, :, 0] = (e1_x[:, np.newaxis] * 65535).astype(np.uint16)
-    # img[:, :, 1] = (e2_x[:, np.newaxis] * 65535).astype(np.uint16)
-    # img[:, :, 3] = 65535
-
-    # # cv2.drawContours(src, [p1], 0, (0, 65535, 0), 2)
-    # # cv2.drawContours(src, [p2], 0, (0, 65535, 0), 2)
-
-    # img = img[:, :, [2, 1, 0, 3]]
-    # cv2.imshow('image', img)
-    # cv2.imwrite(d_name, img)
+    # cv2.drawContours(src, [max_contour[:, 0, :][tl:bl]], 0, (0, 0, 65535), 2)
+    # cv2.drawContours(src, [max_contour[:, 0, :][br:tr]], 0, (0, 65535, 0), 2)
+    # cv2.imshow('image', src)
     # cv2.waitKey(0)
     # cv2.destroyAllWindows()
 
@@ -265,11 +274,8 @@ x_max, y_max, z_max = 8096, 7888, 14370
 # position map generate
 # gen_pos_map(w, h, x_max, y_max, z_max)
 
-# sub mask generate
+# sub mask & sub distance map generate
 clustering(x_max, y_max, z_max)
-
-# gen_sub_d('20230702185753_l1_uv.png', '20230702185753_l1_d.png')
-
 
 
 # filename = '20230702185753_r3_d.png'
