@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 from scipy.interpolate import griddata, splprep, splev
@@ -33,42 +34,55 @@ def parse_obj(filename):
 
     return data
 
-# Generate position image map to store vertices position info of a 3D model
-def gen_pos_map(w, h, x_max, y_max, z_max):
-    obj_name     = '20230702185753.obj'
-    mask_name    = '20230702185753_mask.png'
-    pos_map_name = '20230702185753.png'
+# Generate position & normal map to store vertices info of a 3D model
+def gen_pos_normal(segmentID, x_max, y_max, z_max):
+    prefix          = f'../full-scrolls/Scroll1.volpkg/paths/{segmentID}/'
+    obj_name        = f'{segmentID}.obj'
+    mask_name       = f'{segmentID}_mask.png'
+    pos_map_name    = f'{segmentID}_positions.png'
+    normal_map_name = f'{segmentID}_normals.png'
 
-    # load 3D geometry
-    data = parse_obj(obj_name)
+    # load 3D geometry & mask image
+    data = parse_obj(os.path.join(prefix, obj_name))
+    mask_img = cv2.imread(os.path.join(prefix, mask_name), cv2.IMREAD_UNCHANGED)
 
-    # vertices point normalize & add a channel for opacity (p: rgba 0~1)
-    p    = data['vertices']
-    p   /= np.array([x_max, y_max, z_max])
-    p    = np.concatenate([p, np.ones((p.shape[0], 1))], axis=-1)
+    # vertices point normalize & add a channel for opacity (p, n: rgba 0~1)
+    p = data['vertices']
+    p = p / np.array([x_max, y_max, z_max])
+    p = np.concatenate([p, np.ones((p.shape[0], 1))], axis=-1)
+    n = data['normals']
+    n = (n + 1) / 2
+    n = np.concatenate([n, np.ones((n.shape[0], 1))], axis=-1)
 
     # fit uv points into the grid structure (w, h)
+    h, w = mask_img.shape
+    h, w = (h // 10, w // 10)
     u = (data['uvs'][:, 0] * w).astype(int)
     v = (data['uvs'][:, 1] * h).astype(int)
     v = h - v
     uv = np.column_stack((u, v))
     grid_u, grid_v = np.meshgrid(np.arange(0, w), np.arange(0, h))
 
-    # generate the position map (w, h, rgba)
+    # generate the position & normal map (w, h, rgba)
     position_map = griddata(uv, p, (grid_u, grid_v), method='nearest', fill_value=0)
     position_map = np.clip(position_map, 0, 1)
+    normal_map   = griddata(uv, n, (grid_u, grid_v), method='nearest', fill_value=0)
+    normal_map   = np.clip(normal_map, 0, 1)
 
     # remove the part outside the mask (opacity 0)
-    mask_img = cv2.imread(mask_name, cv2.IMREAD_UNCHANGED)
     mask_img = mask_img.astype(np.float32) / 255
     mask_img = cv2.resize(mask_img, dsize=(w, h), interpolation=cv2.INTER_NEAREST)
     mask = mask_img < 0.01
     position_map[mask, -1] = 0
+    normal_map[mask, -1] = 0
 
-    # save position map with unit16 resolution (also rgba -> bgra for opencv)
+    # save map with unit16 resolution (also rgba -> bgra for opencv)
     position_map = (position_map * 65535).astype(np.uint16)
-    position_map = position_map[:, :, [2, 1, 0, 3]]
-    cv2.imwrite(pos_map_name, position_map, [cv2.IMWRITE_PNG_COMPRESSION, 9])
+    position_map = cv2.cvtColor(position_map, cv2.COLOR_RGBA2BGRA)
+    cv2.imwrite(os.path.join(segmentID, pos_map_name), position_map)
+    normal_map = (normal_map * 65535).astype(np.uint16)
+    normal_map = cv2.cvtColor(normal_map, cv2.COLOR_RGBA2BGRA)
+    cv2.imwrite(os.path.join(segmentID, normal_map_name), normal_map)
 
 # Generate uv map for each sub segment
 def gen_sub_uv(x_max, y_max, z_max):
@@ -275,6 +289,11 @@ def gen_sub_d(uv_name, d_name, position_map):
     t_line = np.column_stack((w * np.linspace(0, 1, w), h * dt)).astype(np.int32)
     b_line = np.column_stack((w * np.linspace(0, 1, w), h * (1- db))).astype(np.int32)
 
+    print('width', w)
+    print('height', h)
+    print('left', np.mean(l_line, axis=0)[0].astype(int))
+    print('right', w- np.mean(r_line, axis=0)[0].astype(int))
+
     cv2.polylines(img, [l_line], isClosed=False, color=(0, 0, 65535), thickness=2)
     cv2.polylines(img, [r_line], isClosed=False, color=(0, 65535, 0), thickness=2)
     cv2.polylines(img, [t_line], isClosed=False, color=(65535, 0, 0), thickness=2)
@@ -283,16 +302,13 @@ def gen_sub_d(uv_name, d_name, position_map):
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-# w, h = 17381, 13513
-w, h = 1738, 1351
 x_max, y_max, z_max = 8096, 7888, 14370
 
-# position map generate
-# gen_pos_map(w, h, x_max, y_max, z_max)
+segmentID = '20230702185753'
+if not os.path.exists(segmentID): os.makedirs(segmentID)
+
+# position & normal map generate
+gen_pos_normal(segmentID, x_max, y_max, z_max)
 
 # sub uv & distance map generate
-gen_sub_uv(x_max, y_max, z_max)
-
-
-
-
+# gen_sub_uv(x_max, y_max, z_max)
