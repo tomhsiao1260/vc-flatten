@@ -166,31 +166,59 @@ def gen_sub_uv(segmentID, x_max, y_max, z_max):
     contours = contours_left + contours_right
     contours = sorted(contours, key=lambda c: cv2.boundingRect(c[0])[0], reverse=True)
 
-    mask_count = 0
     chunks = []
+    res_mask = []
+    res_rect = []
+    res_label = []
+
     for i, (contour, label) in enumerate(contours):
         area = cv2.contourArea(contour)
+        prev_label = res_label[-1] if res_label else None
         if (area / total_area < 0.0005): continue
 
-        mask_count += 1
-        uv_name = os.path.join(segmentID, f'{segmentID}_{label}{mask_count}_uv.png')
-        d_name = os.path.join(segmentID, f'{segmentID}_{label}{mask_count}_d.png')
+        # should be in the same contour
+        if (label == prev_label):
+            mask = res_mask[-1]
+            cv2.drawContours(mask, [contour], -1, 65535, thickness=cv2.FILLED)
+            [x, y, w, h] = cv2.boundingRect(contour)
+            xo, yo, wo, ho = res_rect[-1]
+
+            xf = min(xo, x)
+            yf = min(yo, y)
+            wf = max(xo+wo, x+w) - xf
+            hf = max(yo+ho, y+h) - yf
+            res_rect[-1] = [xf, yf, wf, hf]
+
+        # it's a new contour
+        if (label != prev_label):
+            uv_map = uv_map_left if (label == 'l') else uv_map_right
+            mask = np.zeros_like(uv_map[:, :, 3]).astype(np.uint16)
+            cv2.drawContours(mask, [contour], -1, 65535, thickness=cv2.FILLED)
+            [x, y, w, h] = cv2.boundingRect(contour)
+
+            res_mask.append(mask)
+            res_rect.append([x, y, w, h])
+            res_label.append(label)
+
+    # save the result
+    for i, mask in enumerate(res_mask):
+        mask_count = i + 1
+        label = res_label[i]
+        x, y, w, h = res_rect[i]
 
         uv_map = uv_map_left if (label == 'l') else uv_map_right
-        mask = np.zeros_like(uv_map[:, :, 3]).astype(np.uint16)
-        cv2.drawContours(mask, [contour], -1, 65535, thickness=cv2.FILLED)
         uv_map[:, :, 3] = mask
-        [x, y, w, h] = cv2.boundingRect(contour)
+        uv_name = os.path.join(segmentID, f'{segmentID}_{label}{mask_count}_uv.png')
+        d_name = os.path.join(segmentID, f'{segmentID}_{label}{mask_count}_d.png')
         cv2.imwrite(uv_name, uv_map[:, x:(x+w), :])
 
         w, h, l, r = gen_sub_d(uv_name, d_name, position_map)
         # if (mask_count == 1): gen_sub_d(uv_name, d_name, position_map)
 
-        # save meta info
         chunk = {}
         chunk['id'] = mask_count
-        chunk['uv'] = f'{segmentID}_{label}{mask_count}_uv.png'
-        chunk['d'] = f'{segmentID}_{label}{mask_count}_d.png'
+        chunk['uv'] = f'{segmentID}_{prev_label}{mask_count}_uv.png'
+        chunk['d'] = f'{segmentID}_{prev_label}{mask_count}_d.png'
         chunk['width'] = int(w)
         chunk['height'] = int(h)
         chunk['l'] = int(l)
@@ -321,11 +349,12 @@ def save_meta(segmentID, chunks):
 x_max, y_max, z_max = 8096, 7888, 14370
 
 # segmentID = '20230702185753'
-segmentID = '20231031143852'
+# segmentID = '20231031143852'
+segmentID = '20231106155351'
 if not os.path.exists(segmentID): os.makedirs(segmentID)
 
 # position & normal map generate
-# gen_pos_normal(segmentID, x_max, y_max, z_max)
+gen_pos_normal(segmentID, x_max, y_max, z_max)
 
 # sub uv & distance map generate
 chunks = gen_sub_uv(segmentID, x_max, y_max, z_max)
