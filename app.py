@@ -1,6 +1,7 @@
 import os
 import cv2
 import json
+import glob
 import numpy as np
 from scipy.interpolate import griddata, splprep, splev
 
@@ -217,8 +218,8 @@ def gen_sub_uv(segmentID, x_max, y_max, z_max):
 
         chunk = {}
         chunk['id'] = mask_count
-        chunk['uv'] = f'{segmentID}_{prev_label}{mask_count}_uv.png'
-        chunk['d'] = f'{segmentID}_{prev_label}{mask_count}_d.png'
+        chunk['uv'] = f'{segmentID}_{label}{mask_count}_uv.png'
+        chunk['d'] = f'{segmentID}_{label}{mask_count}_d.png'
         chunk['width'] = int(w)
         chunk['height'] = int(h)
         chunk['l'] = int(l)
@@ -288,6 +289,11 @@ def gen_sub_d(uv_name, d_name, position_map):
     # bl = min(y_ind[2:], key=lambda i: contour[i, 0])
     # br = max(y_ind[2:], key=lambda i: contour[i, 0])
 
+    # it's a bug0
+    if len(corner_list) < 4:
+        average_value = sum(corner_list[-2:]) / 2.0
+        corner_list.append(average_value)
+
     tl = sorted(corner_list)[0]
     bl = sorted(corner_list)[1]
     br = sorted(corner_list)[2]
@@ -334,12 +340,40 @@ def gen_sub_d(uv_name, d_name, position_map):
 
     return w, h, l, r
 
+def gen_texture(segmentID, sampling=1):
+    prefix = f'../full-scrolls/Scroll1.volpkg/paths/{segmentID}/'
+    texture_name = f'{segmentID}.tif'
+
+    image = cv2.imread(os.path.join(prefix, texture_name), cv2.IMREAD_UNCHANGED)
+    image = cv2.resize(image, (0, 0), fx=sampling, fy=sampling, interpolation=cv2.INTER_AREA)
+
+    cv2.imwrite(os.path.join(segmentID, f'{segmentID}_texture.tif'), image)
+
+# Save uint16 image into 2 uint8 images
+def save_16_as_8(segmentID):
+    sub_path = os.path.join(segmentID, 's')
+    if not os.path.exists(sub_path): os.makedirs(sub_path)
+
+    for path in glob.glob(os.path.join(segmentID, '*.png')):
+        img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        img = img.astype(np.float32) / 65535 * 255
+
+        img_n = np.floor(img).astype(np.uint8)
+        img_f = (255 * (img - np.floor(img))).astype(np.uint8)
+        img_f[:, :, 3] = img_n[:, :, 3]
+
+        cv2.imwrite(path, img_n)
+        cv2.imwrite(os.path.join(sub_path, os.path.basename(path)), img_f)
+
 def save_meta(segmentID, chunks):
     info = {}
     info['id'] = segmentID
     info['labels'] = ''
     info['positions'] = f'{segmentID}_positions.png'
     info['normals'] = f'{segmentID}_normals.png'
+    info['texture'] = f'{segmentID}_texture.png'
+    info['scale'] = 1
+    info['offset'] = 0
     info['chunks'] = chunks
 
     meta = {}
@@ -348,9 +382,14 @@ def save_meta(segmentID, chunks):
 
 x_max, y_max, z_max = 8096, 7888, 14370
 
-# segmentID = '20230702185753'
+# segmentID = '20231016151002'
+segmentID = '20230702185753'
 # segmentID = '20231031143852'
-segmentID = '20231106155351'
+# segmentID = '20231106155351'
+# segmentID = '20231022170901'
+# segmentID = '202310102184423'
+
+
 if not os.path.exists(segmentID): os.makedirs(segmentID)
 
 # position & normal map generate
@@ -359,6 +398,49 @@ gen_pos_normal(segmentID, x_max, y_max, z_max)
 # sub uv & distance map generate
 chunks = gen_sub_uv(segmentID, x_max, y_max, z_max)
 
+# generate texture tif image
+gen_texture(segmentID, 0.1)
+
+# save uint16 into uint8
+save_16_as_8(segmentID)
+
 # save meta info as json
-save_meta(segmentID, chunks)
+# save_meta(segmentID, chunks)
+
+# maxNum = 255
+# minNum = 0
+# # maxNum = 32767 + 5
+# # minNum = 32767 - 5
+
+# # matrix = np.zeros((3, 3)).astype(np.uint16)
+# matrix = np.zeros((3, 3)).astype(np.uint8)
+# matrix[0, 0] = minNum
+# matrix[0, 1] = maxNum
+# matrix[0, 2] = minNum
+# matrix[1, 0] = maxNum
+# matrix[1, 1] = minNum
+# matrix[1, 2] = maxNum
+# matrix[2, 0] = minNum
+# matrix[2, 1] = maxNum
+# matrix[2, 2] = minNum
+
+# # result = np.zeros((3, 3, 4), dtype=np.uint16)
+# result = np.zeros((3, 3, 4), dtype=np.uint8)
+# result[:, :, 0] = matrix
+# result[:, :, 1] = matrix
+# result[:, :, 2] = matrix
+# result[:, :, 3] = 255
+# # result[:, :, 3] = 65535
+
+# cv2.imwrite('ok.png', result)
+
+
+
+
+
+
+
+
+
+
 
